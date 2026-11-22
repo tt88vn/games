@@ -41,6 +41,17 @@
   .meta { display: flex; flex-wrap: wrap; gap: 6px; }
   .meta span { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: var(--line); color: var(--muted); }
   .meta .new { background: #ff5c8a; color: #fff; }
+  .card { position: relative; }
+  .share {
+    position: absolute; top: 8px; right: 8px; border: 0; border-radius: 999px; padding: 6px 10px;
+    background: rgba(0,0,0,.35); color: #fff; font-size: 13px; cursor: pointer; backdrop-filter: blur(4px);
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(80px);
+    background: #fff; color: #111; padding: 10px 16px; border-radius: 10px; font-size: 14px;
+    transition: transform .25s; z-index: 50; max-width: 90vw; word-break: break-all;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; display: none; }
   footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 40px; }
 </style>
@@ -56,6 +67,7 @@
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty">Không tìm thấy game nào 😢</div>
 
+  <div class="toast" id="toast"></div>
   <footer>Làm bằng HTML5 + JavaScript</footer>
 </div>
 
@@ -84,7 +96,8 @@ function render() {
     (!q || norm([g.name, g.desc, ...(g.tags || [])].join(" ")).includes(q))
   );
   $("grid").innerHTML = list.map(g => `
-    <a class="card" href="games/${encodeURIComponent(g.id)}/">
+    <a class="card" href="${encodeURIComponent(g.id)}/">
+      <button class="share" data-id="${esc(g.id)}" data-name="${esc(g.name)}">🔗 Chia sẻ</button>
       <div class="thumb" style="background:${esc(g.color || "#333")}">${esc(g.icon || "🎮")}</div>
       <div class="info">
         <h3>${esc(g.name)}</h3>
@@ -105,6 +118,21 @@ $("tags").addEventListener("click", e => {
   activeTag = b.dataset.t; renderTags(); render();
 });
 $("q").addEventListener("input", render);
+
+// Chia sẻ link riêng của từng game
+const gameUrl = id => new URL(encodeURIComponent(id) + "/", location.href.split(/[?#]/)[0]).href;
+function toast(msg) {
+  $("toast").textContent = msg; $("toast").classList.add("show");
+  clearTimeout(toast.t); toast.t = setTimeout(() => $("toast").classList.remove("show"), 2500);
+}
+$("grid").addEventListener("click", async e => {
+  const b = e.target.closest(".share"); if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const url = gameUrl(b.dataset.id);
+  if (navigator.share) { try { await navigator.share({ title: b.dataset.name, url }); return; } catch (err) { if (err.name === "AbortError") return; } }
+  try { await navigator.clipboard.writeText(url); toast("Đã chép link: " + url); }
+  catch (err) { prompt("Chép link game:", url); }
+});
 renderTags(); render();
 </script>
 </body>

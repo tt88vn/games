@@ -7,12 +7,13 @@ Trang tổng hợp game HTML5 + JavaScript thuần, chơi ngay trên trình duy�
 ```
 index.html        Trang chủ: danh sách, tìm kiếm, lọc theo thể loại
 games.js          Danh sách game
-games/<id>/       Mỗi game một thư mục, có index.html
+<id>/             Mỗi game một thư mục, có index.html
+                  Link: https://tt88vn.github.io/games/<id>/
 ```
 
 ## Thêm game mới
 
-1. Tạo thư mục `games/<id>/` chứa `index.html` của game (nên có link `../../` để quay về trang chủ).
+1. Tạo thư mục `<id>/` chứa `index.html` của game (có link `../` để quay về trang chủ).
 2. Thêm một mục vào `games.js`:
 
 ```js
