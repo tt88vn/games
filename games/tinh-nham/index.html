@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Bé Tính Nhẩm Nhanh</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: "Comic Sans MS", "Chalkboard SE", system-ui, -apple-system, sans-serif;
+    background: linear-gradient(160deg, #ffecd2, #fcb69f 50%, #a1c4fd);
+    min-height: 100vh; color: #3d2c5e; user-select: none;
+    display: flex; justify-content: center; padding: 16px 12px 32px;
+  }
+  .wrap { width: 100%; max-width: 480px; }
+  .back { display: inline-block; color: #3d2c5e; font-weight: 700; text-decoration: none; margin-bottom: 10px; opacity: .8; }
+  .screen { display: none; }
+  .screen.on { display: block; animation: fade .25s; }
+  @keyframes fade { from { opacity: 0; transform: translateY(8px); } }
+
+  h1 { text-align: center; font-size: 34px; margin-bottom: 4px; }
+  .lead { text-align: center; margin-bottom: 18px; font-size: 16px; }
+  .levels { display: grid; gap: 12px; }
+  .level {
+    display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+    background: #fff; border: 0; border-radius: 20px; padding: 14px 16px;
+    box-shadow: 0 5px 0 rgba(61,44,94,.18); cursor: pointer; font: inherit; color: inherit;
+  }
+  .level:active { transform: translateY(3px); box-shadow: 0 2px 0 rgba(61,44,94,.18); }
+  .level .ic { font-size: 34px; width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; flex: none; }
+  .level b { font-size: 18px; display: block; }
+  .level small { font-size: 13px; opacity: .7; }
+  .level .stars { margin-left: auto; font-size: 15px; white-space: nowrap; }
+  .opts { display: flex; justify-content: center; gap: 8px; margin: 18px 0 0; flex-wrap: wrap; }
+  .chip { border: 0; border-radius: 999px; padding: 8px 14px; background: rgba(255,255,255,.6); font: inherit; font-size: 14px; cursor: pointer; color: inherit; }
+  .chip.on { background: #3d2c5e; color: #fff; }
+
+  /* Play */
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .pill { background: rgba(255,255,255,.8); border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: 16px; }
+  .quit { border: 0; background: rgba(255,255,255,.6); border-radius: 999px; width: 38px; height: 38px; font-size: 18px; cursor: pointer; }
+  .progress { height: 12px; background: rgba(255,255,255,.5); border-radius: 99px; overflow: hidden; margin-bottom: 16px; }
+  .progress div { height: 100%; width: 100%; background: linear-gradient(90deg, #ff9a3c, #ff5e78); border-radius: 99px; transition: width .2s linear; }
+  .card {
+    background: #fff; border-radius: 28px; padding: 28px 12px; text-align: center;
+    box-shadow: 0 8px 0 rgba(61,44,94,.15); margin-bottom: 18px; position: relative;
+  }
+  .q { font-size: 56px; font-weight: 800; letter-spacing: 2px; }
+  .q span { color: #ff5e78; }
+  .feedback { position: absolute; top: 8px; right: 14px; font-size: 32px; }
+  .combo { height: 22px; font-weight: 700; color: #ff5e78; margin-top: 6px; }
+  .answers { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .ans {
+    border: 0; border-radius: 22px; padding: 22px 0; font: inherit; font-size: 38px; font-weight: 800;
+    color: #fff; cursor: pointer; box-shadow: 0 6px 0 rgba(0,0,0,.18);
+  }
+  .ans:active { transform: translateY(4px); box-shadow: 0 2px 0 rgba(0,0,0,.18); }
+  .ans:nth-child(1) { background: #4facfe; } .ans:nth-child(2) { background: #43e97b; }
+  .ans:nth-child(3) { background: #fa709a; } .ans:nth-child(4) { background: #f7b733; }
+  .ans.right { animation: bump .3s; outline: 5px solid #2ecc71; }
+  .ans.wrong { animation: shake .3s; opacity: .4; }
+  @keyframes bump { 50% { transform: scale(1.08); } }
+  @keyframes shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+
+  /* Result */
+  .result { text-align: center; background: #fff; border-radius: 28px; padding: 28px 18px; box-shadow: 0 8px 0 rgba(61,44,94,.15); }
+  .big-stars { font-size: 54px; margin: 6px 0 4px; }
+  .result h2 { font-size: 28px; }
+  .stat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 18px 0; }
+  .stat div { background: #f6f0ff; border-radius: 16px; padding: 10px 4px; }
+  .stat b { display: block; font-size: 24px; }
+  .stat small { font-size: 12px; opacity: .7; }
+  .review { text-align: left; font-size: 16px; margin-bottom: 16px; }
+  .review p { padding: 6px 10px; border-radius: 10px; background: #fff3f3; margin-top: 6px; }
+  .btns { display: flex; gap: 10px; }
+  .btn { flex: 1; border: 0; border-radius: 18px; padding: 16px; font: inherit; font-size: 18px; font-weight: 800; cursor: pointer; color: #fff; background: #7c5cff; box-shadow: 0 5px 0 rgba(0,0,0,.18); }
+  .btn.alt { background: #fff; color: #3d2c5e; border: 2px solid #e5dcff; }
+  .confetti { position: fixed; top: -20px; font-size: 24px; pointer-events: none; animation: fall linear forwards; z-index: 99; }
+  @keyframes fall { to { transform: translateY(110vh) rotate(540deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="../../">← Kho game</a>
+
+  <!-- Menu -->
+  <section class="screen on" id="menu">
+    <h1>🧮 Bé Tính Nhẩm</h1>
+    <p class="lead">Chọn bài để bắt đầu nhé!</p>
+    <div class="levels" id="levels"></div>
+    <div class="opts" id="modes"></div>
+    <div class="opts"><button class="chip" id="soundBtn"></button></div>
+  </section>
+
+  <!-- Play -->
+  <section class="screen" id="play">
+    <div class="top">
+      <button class="quit" id="quitBtn" aria-label="Thoát">✕</button>
+      <div class="pill" id="counter">Câu 1/10</div>
+      <div class="pill">⭐ <span id="score">0</span></div>
+    </div>
+    <div class="progress"><div id="bar"></div></div>
+    <div class="card">
+      <div class="feedback" id="fb"></div>
+      <div class="q" id="question"></div>
+      <div class="combo" id="combo"></div>
+    </div>
+    <div class="answers" id="answers"></div>
+  </section>
+
+  <!-- Result -->
+  <section class="screen" id="result">
+    <div class="result">
+      <div class="big-stars" id="rStars"></div>
+      <h2 id="rTitle"></h2>
+      <div class="stat">
+        <div><b id="rRight">0</b><small>Câu đúng</small></div>
+        <div><b id="rScore">0</b><small>Điểm</small></div>
+        <div><b id="rBest">0</b><small>Kỷ lục</small></div>
+      </div>
+      <div class="review" id="rReview"></div>
+      <div class="btns">
+        <button class="btn alt" id="menuBtn">Chọn bài</button>
+        <button class="btn" id="againBtn">Chơi lại</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+const $ = id => document.getElementById(id);
+
+// Mỗi bài trả về { text, answer }
+const LEVELS = [
+  { id: "c10",  icon: "🐣", color: "#ffe29a", name: "Cộng trong 10", note: "Mầm non – lớp 1",
+    gen() { const a = rand(0, 9), b = rand(1, 10 - a); return { a, op: "+", b, ans: a + b }; } },
+  { id: "ct10", icon: "🐥", color: "#c3f0ca", name: "Cộng trừ trong 10", note: "Lớp 1",
+    gen() { if (Math.random() < .5) { const a = rand(0, 9), b = rand(1, 10 - a); return { a, op: "+", b, ans: a + b }; }
+            const a = rand(2, 10), b = rand(1, a); return { a, op: "−", b, ans: a - b }; } },
+  { id: "ct20", icon: "🐰", color: "#bde0fe", name: "Cộng trừ trong 20", note: "Lớp 1",
+    gen() { if (Math.random() < .5) { const a = rand(2, 18), b = rand(1, 20 - a); return { a, op: "+", b, ans: a + b }; }
+            const a = rand(5, 20), b = rand(1, a); return { a, op: "−", b, ans: a - b }; } },
+  { id: "ct100", icon: "🦊", color: "#ffc8dd", name: "Cộng trừ trong 100", note: "Lớp 2",
+    gen() { if (Math.random() < .5) { const a = rand(10, 89), b = rand(1, 100 - a); return { a, op: "+", b, ans: a + b }; }
+            const a = rand(20, 100), b = rand(1, a); return { a, op: "−", b, ans: a - b }; } },
+  { id: "nhan", icon: "🦁", color: "#ffd6a5", name: "Bảng nhân", note: "Lớp 2 – 3",
+    gen() { const a = rand(2, 9), b = rand(1, 10); return { a, op: "×", b, ans: a * b }; } },
+  { id: "chia", icon: "🐯", color: "#e2c2ff", name: "Nhân chia", note: "Lớp 3",
+    gen() { const a = rand(2, 9), b = rand(1, 10);
+            return Math.random() < .5 ? { a, op: "×", b, ans: a * b } : { a: a * b, op: "÷", b: a, ans: b }; } }
+];
+const MODES = [
+  { id: "practice", name: "🐢 Thong thả", time: 0 },
+  { id: "normal",   name: "🐇 10 giây/câu", time: 10 },
+  { id: "fast",     name: "🚀 5 giây/câu", time: 5 }
+];
+const TOTAL = 10;
+
+const store = (k, v) => { try { if (v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); } catch (e) { return null; } };
+let settings = Object.assign({ mode: "normal", sound: true }, store("tn_settings") || {});
+let records = store("tn_records") || {};
+let level, idx, score, right, streak, cur, timer, tLeft, locked, mistakes;
+
+// ---------- Âm thanh ----------
+let ac;
+function beep(freqs, dur = .12) {
+  if (!settings.sound) return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    freqs.forEach((f, i) => {
+      const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime + i * dur;
+      o.type = "triangle"; o.frequency.value = f;
+      g.gain.setValueAtTime(.25, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+      o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur);
+    });
+  } catch (e) {}
+}
+const sRight = () => beep([660, 880]);
+const sWrong = () => beep([220, 160], .18);
+const sWin = () => beep([523, 659, 784, 1047], .15);
+
+// ---------- Menu ----------
+function show(id) { document.querySelectorAll(".screen").forEach(s => s.classList.toggle("on", s.id === id)); }
+function starsFor(r) { return r >= 10 ? 3 : r >= 8 ? 2 : r >= 5 ? 1 : 0; }
+
+function renderMenu() {
+  $("levels").innerHTML = LEVELS.map((l, i) => {
+    const s = records[l.id]?.stars || 0;
+    return `<button class="level" data-i="${i}">
+      <span class="ic" style="background:${l.color}">${l.icon}</span>
+      <span><b>${l.name}</b><small>${l.note}</small></span>
+      <span class="stars">${"⭐".repeat(s)}${"☆".repeat(3 - s)}</span></button>`;
+  }).join("");
+  $("modes").innerHTML = MODES.map(m => `<button class="chip${m.id === settings.mode ? " on" : ""}" data-m="${m.id}">${m.name}</button>`).join("");
+  $("soundBtn").textContent = settings.sound ? "🔊 Âm thanh: bật" : "🔇 Âm thanh: tắt";
+}
+$("levels").onclick = e => { const b = e.target.closest(".level"); if (b) start(+b.dataset.i); };
+$("modes").onclick = e => { const b = e.target.closest(".chip"); if (b) { settings.mode = b.dataset.m; store("tn_settings", settings); renderMenu(); } };
+$("soundBtn").onclick = () => { settings.sound = !settings.sound; store("tn_settings", settings); renderMenu(); };
+
+// ---------- Chơi ----------
+function start(i) {
+  level = LEVELS[i]; idx = 0; score = 0; right = 0; streak = 0; mistakes = [];
+  show("play"); next();
+}
+
+function makeChoices(ans) {
+  const set = new Set([ans]);
+  const spread = Math.max(3, Math.round(ans * .2));
+  let guard = 0;
+  while (set.size < 4 && guard++ < 100) {
+    const d = Math.random() < .5 ? rand(1, 2) : rand(1, spread); // nhiễu sát đáp án để bé phải tính
+    const v = ans + (Math.random() < .5 ? -d : d);
+    if (v >= 0) set.add(v);
+  }
+  while (set.size < 4) set.add(ans + set.size + 3);
+  return [...set].sort(() => Math.random() - .5);
+}
+
+let last = "";
+function next() {
+  if (idx >= TOTAL) return finish();
+  idx++; locked = false;
+  do { cur = level.gen(); } while (`${cur.a}${cur.op}${cur.b}` === last);
+  last = `${cur.a}${cur.op}${cur.b}`;
+  $("counter").textContent = `Câu ${idx}/${TOTAL}`;
+  $("question").innerHTML = `${cur.a} <span>${cur.op}</span> ${cur.b} = ?`;
+  $("fb").textContent = "";
+  $("answers").innerHTML = makeChoices(cur.ans).map(v => `<button class="ans" data-v="${v}">${v}</button>`).join("");
+  startTimer();
+}
+
+function startTimer() {
+  clearInterval(timer);
+  const t = MODES.find(m => m.id === settings.mode).time;
+  const bar = $("bar");
+  if (!t) { bar.style.width = (idx - 1) / TOTAL * 100 + "%"; return; }
+  tLeft = t * 10; bar.style.width = "100%";
+  timer = setInterval(() => {
+    tLeft--; bar.style.width = tLeft / (t * 10) * 100 + "%";
+    if (tLeft <= 0) { clearInterval(timer); answer(null); }
+  }, 100);
+}
+
+function answer(btn) {
+  if (locked) return; locked = true; clearInterval(timer);
+  const v = btn ? +btn.dataset.v : null;
+  const correctBtn = [...document.querySelectorAll(".ans")].find(b => +b.dataset.v === cur.ans);
+  if (v === cur.ans) {
+    right++; streak++;
+    const t = MODES.find(m => m.id === settings.mode).time;
+    const bonus = t ? Math.ceil(tLeft / (t * 10) * 5) : 0;   // trả lời nhanh được thêm điểm
+    score += 10 + bonus + (streak >= 3 ? 5 : 0);
+    btn.classList.add("right"); $("fb").textContent = "✅"; sRight();
+    $("combo").textContent = streak >= 3 ? `🔥 ${streak} câu đúng liên tiếp!` : "";
+  } else {
+    streak = 0;
+    if (btn) btn.classList.add("wrong");
+    correctBtn.classList.add("right");
+    $("fb").textContent = btn ? "❌" : "⏰"; sWrong();
+    $("combo").textContent = btn ? "Gần đúng rồi, cố lên!" : "Hết giờ rồi!";
+    mistakes.push(`${cur.a} ${cur.op} ${cur.b} = <b>${cur.ans}</b>`);
+  }
+  $("score").textContent = score;
+  setTimeout(next, v === cur.ans ? 650 : 1400);
+}
+$("answers").onclick = e => { const b = e.target.closest(".ans"); if (b) answer(b); };
+$("quitBtn").onclick = () => { clearInterval(timer); renderMenu(); show("menu"); };
+
+// ---------- Kết quả ----------
+function finish() {
+  clearInterval(timer);
+  const s = starsFor(right);
+  const rec = records[level.id] || { stars: 0, best: 0 };
+  const newBest = score > rec.best;
+  records[level.id] = { stars: Math.max(rec.stars, s), best: Math.max(rec.best, score) };
+  store("tn_records", records);
+
+  $("rStars").textContent = "⭐".repeat(s) + "☆".repeat(3 - s);
+  $("rTitle").textContent = ["Cố lên nào! 💪", "Khá lắm! 👍", "Giỏi quá! 🎉", "Xuất sắc! 🏆"][s] + (newBest && score ? " Kỷ lục mới!" : "");
+  $("rRight").textContent = `${right}/${TOTAL}`;
+  $("rScore").textContent = score;
+  $("rBest").textContent = records[level.id].best;
+  $("rReview").innerHTML = mistakes.length ? "<b>Cùng xem lại nhé:</b>" + mistakes.map(m => `<p>${m}</p>`).join("") : "";
+  show("result");
+  if (s >= 2) { sWin(); confetti(); }
+}
+function confetti() {
+  const em = ["🎉", "⭐", "🎈", "✨", "🌟"];
+  for (let i = 0; i < 30; i++) {
+    const d = document.createElement("div");
+    d.className = "confetti"; d.textContent = em[i % em.length];
+    d.style.left = Math.random() * 100 + "vw";
+    d.style.animationDuration = 1.8 + Math.random() * 1.5 + "s";
+    d.style.animationDelay = Math.random() * .5 + "s";
+    document.body.appendChild(d); setTimeout(() => d.remove(), 4000);
+  }
+}
+$("againBtn").onclick = () => start(LEVELS.indexOf(level));
+$("menuBtn").onclick = () => { renderMenu(); show("menu"); };
+
+renderMenu();
+</script>
+</body>
+</html>
