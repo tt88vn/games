@@ -6,7 +6,7 @@ window.GAMES = [
     icon: "♞",
     color: "#b58863",
     tags: ["Cờ", "Trí tuệ"],
-    desc: "Đấu với máy (Dễ, Vừa, Khó) hoặc 2 người cùng máy. Có gợi ý nước đi và đi lại.",
+    desc: "Đấu với máy 4 mức (Dễ → Rất khó) hoặc 2 người cùng máy. Có gợi ý nước đi và đi lại.",
     added: "2026-11-23"
   },
   {

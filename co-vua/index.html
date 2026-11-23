@@ -69,6 +69,7 @@
   .modal label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
   .seg { display: flex; gap: 6px; }
   .seg button { flex: 1; background: #2b2118; box-shadow: none; border: 2px solid transparent; }
+  .seg.grid2 { display: grid; grid-template-columns: 1fr 1fr; }
   .seg button.on { border-color: var(--accent); background: #4a3727; }
   .modal .primary { width: 100%; margin-top: 18px; background: var(--accent); color: #2b2118; padding: 13px; font-size: 16px; }
   .modal .ghost { width: 100%; margin-top: 8px; background: transparent; box-shadow: none; color: var(--muted); }
@@ -115,10 +116,11 @@
         <button data-v="r">🎲 Ngẫu nhiên</button>
       </div>
       <label>Độ khó</label>
-      <div class="seg" data-key="level">
+      <div class="seg grid2" data-key="level">
         <button data-v="easy">😊 Dễ</button>
         <button data-v="medium">🙂 Vừa</button>
         <button data-v="hard">😎 Khó</button>
+        <button data-v="veryhard">🔥 Rất khó</button>
       </div>
     </div>
     <button class="primary" id="startBtn">Bắt đầu</button>
@@ -143,6 +145,424 @@
     <button class="ghost" id="endView">Xem lại bàn cờ</button>
   </div>
 </div>
+
+<script id="engineSrc" type="text/plain">
+/* Engine "Rất khó" — chạy trong Web Worker.
+   Bàn cờ 10x12, make/unmake, Zobrist hash, bảng chuyển vị (TT), PVS, null-move, LMR,
+   killer/history, quiescence, đánh giá có cấu trúc tốt, an toàn vua, sách khai cuộc. */
+const OFF = -1, P = 1, N = 2, B = 3, R = 4, Q = 5, K = 6, BLACK = 8;
+const SQ = (r, c) => 21 + r * 10 + c;
+const NOFF = [-21, -19, -12, -8, 8, 12, 19, 21], KOFF = [-11, -10, -9, -1, 1, 9, 10, 11];
+const BOFF = [-11, -9, 9, 11], ROFF = [-10, -1, 1, 10], QOFF = BOFF.concat(ROFF);
+const CAP = 1, EP = 2, CASTLE = 4, DOUBLE = 8;
+
+const board = new Int8Array(120);
+let side = 0, castle = 0, ep = 0, half = 0, hashLo = 0, hashHi = 0, ply = 0;
+const kingSq = [0, 0];
+
+// Zobrist (PRNG cố định)
+let seed = 0x9e3779b9;
+function rnd() { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return (t ^ t >>> 14) | 0; }
+const ZL = [], ZH = [];
+for (let p = 0; p < 16; p++) { ZL[p] = new Int32Array(120); ZH[p] = new Int32Array(120); for (let s = 0; s < 120; s++) { ZL[p][s] = rnd(); ZH[p][s] = rnd(); } }
+const ZsL = rnd(), ZsH = rnd();
+const ZcL = new Int32Array(16), ZcH = new Int32Array(16); for (let i = 0; i < 16; i++) { ZcL[i] = rnd(); ZcH[i] = rnd(); }
+const ZeL = new Int32Array(120), ZeH = new Int32Array(120); for (let i = 0; i < 120; i++) { ZeL[i] = rnd(); ZeH[i] = rnd(); }
+const CM = new Int8Array(120).fill(15);
+CM[95] = 12; CM[98] = 14; CM[91] = 13; CM[25] = 3; CM[28] = 11; CM[21] = 7;
+
+// ngăn xếp hoàn tác + lịch sử hash (để phát hiện lặp)
+const MAXH = 2048;
+const uMove = new Int32Array(MAXH), uCap = new Int8Array(MAXH), uCastle = new Int8Array(MAXH), uEp = new Int8Array(MAXH),
+      uHalf = new Int16Array(MAXH), uHL = new Int32Array(MAXH), uHH = new Int32Array(MAXH);
+const histL = new Int32Array(MAXH), histH = new Int32Array(MAXH);
+let hp = 0, histN = 0;
+
+function computeHash() {
+  let lo = 0, hi = 0;
+  for (let s = 21; s < 99; s++) { const p = board[s]; if (p > 0) { lo ^= ZL[p][s]; hi ^= ZH[p][s]; } }
+  if (side) { lo ^= ZsL; hi ^= ZsH; }
+  lo ^= ZcL[castle]; hi ^= ZcH[castle];
+  if (ep) { lo ^= ZeL[ep]; hi ^= ZeH[ep]; }
+  hashLo = lo; hashHi = hi;
+}
+const CODE = { P: 1, N: 2, B: 3, R: 4, Q: 5, K: 6, p: 9, n: 10, b: 11, r: 12, q: 13, k: 14 };
+function setStart() {
+  const rows = ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"];
+  board.fill(OFF);
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const ch = rows[r][c]; board[SQ(r, c)] = ch === "." ? 0 : CODE[ch]; }
+  kingSq[0] = 95; kingSq[1] = 25; side = 0; castle = 15; ep = 0; half = 0; hp = 0; ply = 0;
+  computeHash(); histN = 0; histL[histN] = hashLo; histH[histN] = hashHi; histN++;
+}
+function setBoard(rows8, turn, cs, epRC, hm) { // rows8: mảng 8x8 ký tự hoặc null
+  board.fill(OFF);
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) { const ch = rows8[r][c]; const v = ch ? CODE[ch] : 0; board[SQ(r, c)] = v; if (v === 6) kingSq[0] = SQ(r, c); if (v === 14) kingSq[1] = SQ(r, c); }
+  side = turn === "w" ? 0 : 1; castle = (cs.K ? 1 : 0) | (cs.Q ? 2 : 0) | (cs.k ? 4 : 0) | (cs.q ? 8 : 0);
+  ep = epRC ? SQ(epRC[0], epRC[1]) : 0; half = hm || 0; hp = 0; ply = 0;
+  computeHash(); histN = 0; histL[histN] = hashLo; histH[histN] = hashHi; histN++;
+}
+
+function attacked(sq, by) {
+  if (by === 0) { if (board[sq + 9] === P || board[sq + 11] === P) return true; }
+  else { if (board[sq - 9] === P + BLACK || board[sq - 11] === P + BLACK) return true; }
+  const o = by ? BLACK : 0, n = N + o, k = K + o, b = B + o, r = R + o, q = Q + o;
+  for (let i = 0; i < 8; i++) { if (board[sq + NOFF[i]] === n) return true; if (board[sq + KOFF[i]] === k) return true; }
+  for (let i = 0; i < 4; i++) {
+    let d = BOFF[i], s = sq + d; while (board[s] === 0) s += d; if (board[s] === b || board[s] === q) return true;
+    d = ROFF[i]; s = sq + d; while (board[s] === 0) s += d; if (board[s] === r || board[s] === q) return true;
+  }
+  return false;
+}
+const inCheck = () => attacked(kingSq[side], side ^ 1);
+
+function make(m) {
+  const from = m & 127, to = (m >> 7) & 127, promo = (m >> 14) & 7, fl = m >>> 17;
+  const p = board[from]; let cap = board[to];
+  uMove[hp] = m; uCastle[hp] = castle; uEp[hp] = ep; uHalf[hp] = half; uHL[hp] = hashLo; uHH[hp] = hashHi;
+  let lo = hashLo ^ ZcL[castle], hi = hashHi ^ ZcH[castle];
+  if (ep) { lo ^= ZeL[ep]; hi ^= ZeH[ep]; }
+  lo ^= ZL[p][from]; hi ^= ZH[p][from]; board[from] = 0;
+  if (fl & EP) { const cs = side === 0 ? to + 10 : to - 10; cap = board[cs]; lo ^= ZL[cap][cs]; hi ^= ZH[cap][cs]; board[cs] = 0; }
+  else if (cap) { lo ^= ZL[cap][to]; hi ^= ZH[cap][to]; }
+  uCap[hp] = cap;
+  const np = promo ? (promo | (side ? BLACK : 0)) : p;
+  board[to] = np; lo ^= ZL[np][to]; hi ^= ZH[np][to];
+  if (fl & CASTLE) {
+    let rf, rt; if (to === from + 2) { rf = from + 3; rt = from + 1; } else { rf = from - 4; rt = from - 1; }
+    const rk = board[rf]; board[rf] = 0; board[rt] = rk; lo ^= ZL[rk][rf] ^ ZL[rk][rt]; hi ^= ZH[rk][rf] ^ ZH[rk][rt];
+  }
+  if ((p & 7) === K) kingSq[side] = to;
+  castle &= CM[from] & CM[to];
+  ep = (fl & DOUBLE) ? (from + to) >> 1 : 0;
+  half = ((p & 7) === P || cap) ? 0 : half + 1;
+  lo ^= ZcL[castle]; hi ^= ZcH[castle];
+  if (ep) { lo ^= ZeL[ep]; hi ^= ZeH[ep]; }
+  side ^= 1; lo ^= ZsL; hi ^= ZsH;
+  hashLo = lo; hashHi = hi; hp++;
+  histL[histN] = lo; histH[histN] = hi; histN++;
+}
+function unmake() {
+  hp--; histN--;
+  const m = uMove[hp], from = m & 127, to = (m >> 7) & 127, promo = (m >> 14) & 7, fl = m >>> 17;
+  side ^= 1;
+  let p = board[to]; if (promo) p = P | (side ? BLACK : 0);
+  board[from] = p;
+  if (fl & EP) { board[to] = 0; board[side === 0 ? to + 10 : to - 10] = uCap[hp]; } else board[to] = uCap[hp];
+  if (fl & CASTLE) { if (to === from + 2) { board[from + 3] = board[from + 1]; board[from + 1] = 0; } else { board[from - 4] = board[from - 1]; board[from - 1] = 0; } }
+  if ((p & 7) === K) kingSq[side] = from;
+  castle = uCastle[hp]; ep = uEp[hp]; half = uHalf[hp]; hashLo = uHL[hp]; hashHi = uHH[hp];
+}
+function makeNull() {
+  uEp[hp] = ep; uHL[hp] = hashLo; uHH[hp] = hashHi; uHalf[hp] = half;
+  if (ep) { hashLo ^= ZeL[ep]; hashHi ^= ZeH[ep]; ep = 0; }
+  side ^= 1; hashLo ^= ZsL; hashHi ^= ZsH; hp++;
+  histL[histN] = hashLo; histH[histN] = hashHi; histN++;
+}
+function unmakeNull() { hp--; histN--; side ^= 1; ep = uEp[hp]; hashLo = uHL[hp]; hashHi = uHH[hp]; half = uHalf[hp]; }
+
+const MV = new Int32Array(40000), SC = new Int32Array(40000), moveBase = new Int32Array(130);
+function gen(n, caps) {
+  const us = side, them = us ^ 1;
+  for (let sq = 21; sq < 99; sq++) {
+    const p = board[sq]; if (p <= 0 || (p >> 3) !== us) continue;
+    const t = p & 7;
+    if (t === P) {
+      const dir = us ? 10 : -10, r = ((sq - 21) / 10) | 0, startRow = us ? 1 : 6, lastRow = us ? 7 : 0;
+      const to = sq + dir, promoRow = (((to - 21) / 10) | 0) === lastRow;
+      if (board[to] === 0) {
+        if (promoRow) { MV[n++] = sq | (to << 7) | (Q << 14); if (!caps) { MV[n++] = sq | (to << 7) | (N << 14); MV[n++] = sq | (to << 7) | (R << 14); MV[n++] = sq | (to << 7) | (B << 14); } }
+        else if (!caps) { MV[n++] = sq | (to << 7); if (r === startRow && board[to + dir] === 0) MV[n++] = sq | ((to + dir) << 7) | (DOUBLE << 17); }
+      }
+      for (let k = -1; k <= 1; k += 2) {
+        const t2 = to + k, q = board[t2];
+        if (q > 0 && (q >> 3) === them) {
+          if (promoRow) { MV[n++] = sq | (t2 << 7) | (Q << 14) | (CAP << 17); if (!caps) { MV[n++] = sq | (t2 << 7) | (N << 14) | (CAP << 17); MV[n++] = sq | (t2 << 7) | (R << 14) | (CAP << 17); MV[n++] = sq | (t2 << 7) | (B << 14) | (CAP << 17); } }
+          else MV[n++] = sq | (t2 << 7) | (CAP << 17);
+        } else if (ep && t2 === ep) MV[n++] = sq | (t2 << 7) | ((CAP | EP) << 17);
+      }
+    } else if (t === N || t === K) {
+      const offs = t === N ? NOFF : KOFF;
+      for (let i = 0; i < 8; i++) { const to = sq + offs[i], q = board[to];
+        if (q === 0) { if (!caps) MV[n++] = sq | (to << 7); } else if (q > 0 && (q >> 3) === them) MV[n++] = sq | (to << 7) | (CAP << 17); }
+    } else {
+      const dirs = t === B ? BOFF : t === R ? ROFF : QOFF;
+      for (let i = 0; i < dirs.length; i++) { const d = dirs[i]; let to = sq + d;
+        for (;;) { const q = board[to];
+          if (q === 0) { if (!caps) MV[n++] = sq | (to << 7); to += d; continue; }
+          if (q > 0 && (q >> 3) === them) MV[n++] = sq | (to << 7) | (CAP << 17);
+          break; } }
+    }
+  }
+  if (!caps) {
+    if (us === 0) {
+      if ((castle & 1) && board[96] === 0 && board[97] === 0 && board[98] === R && !attacked(95, 1) && !attacked(96, 1) && !attacked(97, 1)) MV[n++] = 95 | (97 << 7) | (CASTLE << 17);
+      if ((castle & 2) && board[94] === 0 && board[93] === 0 && board[92] === 0 && board[91] === R && !attacked(95, 1) && !attacked(94, 1) && !attacked(93, 1)) MV[n++] = 95 | (93 << 7) | (CASTLE << 17);
+    } else {
+      if ((castle & 4) && board[26] === 0 && board[27] === 0 && board[28] === R + BLACK && !attacked(25, 0) && !attacked(26, 0) && !attacked(27, 0)) MV[n++] = 25 | (27 << 7) | (CASTLE << 17);
+      if ((castle & 8) && board[24] === 0 && board[23] === 0 && board[22] === 0 && board[21] === R + BLACK && !attacked(25, 0) && !attacked(24, 0) && !attacked(23, 0)) MV[n++] = 25 | (23 << 7) | (CASTLE << 17);
+    }
+  }
+  return n;
+}
+
+/* ---------- Đánh giá ---------- */
+const MGV = [0, 100, 320, 330, 500, 900, 0], EGV = [0, 120, 300, 320, 520, 920, 0], PH = [0, 0, 1, 1, 2, 4, 0];
+const T = {
+  1: [[0,0,0,0,0,0,0,0],[50,50,50,50,50,50,50,50],[10,10,20,30,30,20,10,10],[5,5,10,25,25,10,5,5],[0,0,0,20,20,0,0,0],[5,-5,-10,0,0,-10,-5,5],[5,10,10,-20,-20,10,10,5],[0,0,0,0,0,0,0,0]],
+  2: [[-50,-40,-30,-30,-30,-30,-40,-50],[-40,-20,0,0,0,0,-20,-40],[-30,0,10,15,15,10,0,-30],[-30,5,15,20,20,15,5,-30],[-30,0,15,20,20,15,0,-30],[-30,5,10,15,15,10,5,-30],[-40,-20,0,5,5,0,-20,-40],[-50,-40,-30,-30,-30,-30,-40,-50]],
+  3: [[-20,-10,-10,-10,-10,-10,-10,-20],[-10,0,0,0,0,0,0,-10],[-10,0,5,10,10,5,0,-10],[-10,5,5,10,10,5,5,-10],[-10,0,10,10,10,10,0,-10],[-10,10,10,10,10,10,10,-10],[-10,5,0,0,0,0,5,-10],[-20,-10,-10,-10,-10,-10,-10,-20]],
+  4: [[0,0,0,0,0,0,0,0],[5,10,10,10,10,10,10,5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[0,0,0,5,5,0,0,0]],
+  5: [[-20,-10,-10,-5,-5,-10,-10,-20],[-10,0,0,0,0,0,0,-10],[-10,0,5,5,5,5,0,-10],[-5,0,5,5,5,5,0,-5],[0,0,5,5,5,5,0,-5],[-10,5,5,5,5,5,0,-10],[-10,0,5,0,0,0,0,-10],[-20,-10,-10,-5,-5,-10,-10,-20]],
+  6: [[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-20,-30,-30,-40,-40,-30,-30,-20],[-10,-20,-20,-20,-20,-20,-20,-10],[20,20,0,0,0,0,20,20],[20,30,10,0,0,10,30,20]]
+};
+const KEG = [[-50,-40,-30,-20,-20,-30,-40,-50],[-30,-20,-10,0,0,-10,-20,-30],[-30,-10,20,30,30,20,-10,-30],[-30,-10,30,40,40,30,-10,-30],[-30,-10,30,40,40,30,-10,-30],[-30,-10,20,30,30,20,-10,-30],[-30,-30,0,0,0,0,-30,-30],[-50,-30,-30,-30,-30,-30,-30,-50]];
+const PEGR = [0, 90, 60, 40, 25, 15, 10, 0];
+const PMG = [], PEG = [];
+for (let p = 0; p < 16; p++) { PMG[p] = new Int16Array(120); PEG[p] = new Int16Array(120); }
+for (let t = 1; t <= 6; t++) for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+  const s = SQ(r, c);
+  PMG[t][s] = MGV[t] + T[t][r][c]; PMG[t + BLACK][s] = MGV[t] + T[t][7 - r][c];
+  const egW = t === 6 ? KEG[r][c] : t === 1 ? PEGR[r] : T[t][r][c], egB = t === 6 ? KEG[7 - r][c] : t === 1 ? PEGR[7 - r] : T[t][7 - r][c];
+  PEG[t][s] = EGV[t] + egW; PEG[t + BLACK][s] = EGV[t] + egB;
+}
+const PASS_MG = [0, 5, 10, 15, 25, 40, 60, 0], PASS_EG = [0, 10, 20, 35, 55, 85, 130, 0];
+const wpf = new Int8Array(10), bpf = new Int8Array(10), wMax = new Int8Array(10), bMin = new Int8Array(10);
+function evaluate() {
+  let mg = 0, eg = 0, phase = 0, wb = 0, bb = 0;
+  wpf.fill(0); bpf.fill(0); wMax.fill(-1); bMin.fill(8);
+  for (let s = 21; s < 99; s++) {
+    const p = board[s]; if (p <= 0) continue;
+    const t = p & 7; phase += PH[t];
+    if (p < 8) { mg += PMG[p][s]; eg += PEG[p][s]; } else { mg -= PMG[p][s]; eg -= PEG[p][s]; }
+    if (t === P) { const f = (s - 21) % 10 + 1, r = ((s - 21) / 10) | 0;
+      if (p < 8) { wpf[f]++; if (r > wMax[f]) wMax[f] = r; } else { bpf[f]++; if (r < bMin[f]) bMin[f] = r; } }
+    else if (t === B) { if (p < 8) wb++; else bb++; }
+  }
+  for (let s = 21; s < 99; s++) {
+    const p = board[s]; if (p <= 0) continue;
+    const t = p & 7, f = (s - 21) % 10 + 1, r = ((s - 21) / 10) | 0;
+    if (t === P) {
+      if (p < 8) {
+        if (wpf[f] > 1) { mg -= 10; eg -= 20; }
+        if (!wpf[f - 1] && !wpf[f + 1]) { mg -= 10; eg -= 15; }
+        if (bMin[f - 1] >= r && bMin[f] >= r && bMin[f + 1] >= r) { mg += PASS_MG[7 - r]; eg += PASS_EG[7 - r]; }
+      } else {
+        if (bpf[f] > 1) { mg += 10; eg += 20; }
+        if (!bpf[f - 1] && !bpf[f + 1]) { mg += 10; eg += 15; }
+        if (wMax[f - 1] <= r && wMax[f] <= r && wMax[f + 1] <= r) { mg -= PASS_MG[r]; eg -= PASS_EG[r]; }
+      }
+    } else if (t === R) {
+      const own = p < 8 ? wpf[f] : bpf[f], opp = p < 8 ? bpf[f] : wpf[f];
+      const v = !own ? (!opp ? 20 : 10) : 0;
+      if (p < 8) { mg += v; eg += v >> 1; } else { mg -= v; eg -= v >> 1; }
+    }
+  }
+  if (wb >= 2) { mg += 30; eg += 50; }
+  if (bb >= 2) { mg -= 30; eg -= 50; }
+  // lá chắn tốt trước vua (trung cuộc)
+  const kw = kingSq[0], kb = kingSq[1];
+  if (((kw - 21) / 10 | 0) === 7) for (let d = -1; d <= 1; d++) { const s = kw - 10 + d; mg += board[s] === P ? 12 : board[s - 10] === P ? 6 : -10; }
+  if (((kb - 21) / 10 | 0) === 0) for (let d = -1; d <= 1; d++) { const s = kb + 10 + d; mg -= board[s] === P + BLACK ? 12 : board[s + 10] === P + BLACK ? 6 : -10; }
+  if (phase > 24) phase = 24;
+  const sc = ((mg * phase + eg * (24 - phase)) / 24) | 0;
+  return (side === 0 ? sc : -sc) + 10;
+}
+
+/* ---------- Tìm kiếm ---------- */
+const INF = 32000, MATE = 30000;
+const TTBITS = 20, TTSIZE = 1 << TTBITS, TTMASK = TTSIZE - 1;
+const ttKey = new Int32Array(TTSIZE), ttMove = new Int32Array(TTSIZE), ttScore = new Int16Array(TTSIZE), ttDepth = new Int8Array(TTSIZE), ttFlag = new Int8Array(TTSIZE);
+const EXACT = 1, LOWER = 2, UPPER = 3;
+const killer1 = new Int32Array(130), killer2 = new Int32Array(130), hist = new Int32Array(120 * 120);
+let nodes = 0, deadline = 0, stop = false, rootBest = 0;
+
+function isRep() {
+  for (let i = histN - 3, lim = histN - 1 - half; i >= 0 && i >= lim; i -= 2) if (histL[i] === hashLo && histH[i] === hashHi) return true;
+  return false;
+}
+function hasPieces(s) { const o = s ? BLACK : 0; for (let q = 21; q < 99; q++) { const p = board[q]; if (p > 0 && (p >> 3) === s && (p & 7) !== P && (p & 7) !== K) return true; } return false; }
+function pick(i, end) { let bi = i, bs = SC[i]; for (let j = i + 1; j < end; j++) if (SC[j] > bs) { bs = SC[j]; bi = j; }
+  if (bi !== i) { const m = MV[i]; MV[i] = MV[bi]; MV[bi] = m; const s = SC[i]; SC[i] = SC[bi]; SC[bi] = s; } }
+function victim(m) { const v = board[(m >> 7) & 127] & 7; return v || P; }
+
+function qsearch(alpha, beta) {
+  if ((++nodes & 2047) === 0 && Date.now() > deadline) stop = true;
+  if (stop) return 0;
+  const stand = evaluate();
+  if (stand >= beta) return stand;
+  if (stand > alpha) alpha = stand;
+  if (ply >= 120) return stand;
+  const start = moveBase[ply], end = gen(start, true); moveBase[ply + 1] = end;
+  for (let i = start; i < end; i++) { const m = MV[i]; SC[i] = MGV[victim(m)] * 10 - (board[m & 127] & 7) + ((m >> 14) & 7 ? 9000 : 0); }
+  for (let i = start; i < end; i++) {
+    pick(i, end); const m = MV[i];
+    if (!((m >> 14) & 7) && stand + MGV[victim(m)] + 200 < alpha) continue; // delta pruning
+    make(m); ply++;
+    if (attacked(kingSq[side ^ 1], side)) { ply--; unmake(); continue; }
+    const v = -qsearch(-beta, -alpha);
+    ply--; unmake();
+    if (stop) return 0;
+    if (v >= beta) return v;
+    if (v > alpha) alpha = v;
+  }
+  return alpha;
+}
+
+function search(depth, alpha, beta, pv, allowNull) {
+  if ((++nodes & 2047) === 0 && Date.now() > deadline) stop = true;
+  if (stop) return 0;
+  if (ply > 0 && (half >= 100 || isRep())) return 0;
+  if (ply >= 100) return evaluate();
+  const inChk = inCheck();
+  if (inChk) depth++;
+  if (depth <= 0) return qsearch(alpha, beta);
+
+  const idx = hashLo & TTMASK; let ttm = 0;
+  if (ttKey[idx] === hashHi) {
+    ttm = ttMove[idx];
+    if (!pv && ply > 0 && ttDepth[idx] >= depth) {
+      let s = ttScore[idx]; if (s > MATE - 500) s -= ply; else if (s < -MATE + 500) s += ply;
+      const f = ttFlag[idx];
+      if (f === EXACT || (f === LOWER && s >= beta) || (f === UPPER && s <= alpha)) return s;
+    }
+  }
+  if (!pv && !inChk && allowNull && depth >= 3 && hasPieces(side) && evaluate() >= beta) {
+    makeNull(); ply++;
+    const v = -search(depth - 3, -beta, -beta + 1, false, false);
+    ply--; unmakeNull();
+    if (stop) return 0;
+    if (v >= beta) return beta;
+  }
+
+  const start = moveBase[ply], end = gen(start, false); moveBase[ply + 1] = end;
+  for (let i = start; i < end; i++) {
+    const m = MV[i]; let s;
+    if (m === ttm) s = 2000000;
+    else if ((m >> 17) & CAP) s = 1000000 + MGV[victim(m)] * 10 - (board[m & 127] & 7);
+    else if ((m >> 14) & 7) s = 950000;
+    else if (m === killer1[ply]) s = 900000;
+    else if (m === killer2[ply]) s = 800000;
+    else s = hist[(m & 127) * 120 + ((m >> 7) & 127)];
+    SC[i] = s;
+  }
+  let best = -INF, bestM = 0, legal = 0;
+  const origAlpha = alpha;
+  for (let i = start; i < end; i++) {
+    pick(i, end); const m = MV[i];
+    make(m); ply++;
+    if (attacked(kingSq[side ^ 1], side)) { ply--; unmake(); continue; }
+    legal++;
+    const quiet = !((m >> 17) & CAP) && !((m >> 14) & 7);
+    let v;
+    if (legal === 1) v = -search(depth - 1, -beta, -alpha, pv, true);
+    else {
+      let red = 0;
+      if (depth >= 3 && legal > 3 && quiet && !inChk && !inCheck()) red = legal > 10 ? 2 : 1;
+      v = -search(depth - 1 - red, -alpha - 1, -alpha, false, true);
+      if (v > alpha && red) v = -search(depth - 1, -alpha - 1, -alpha, false, true);
+      if (v > alpha && v < beta) v = -search(depth - 1, -beta, -alpha, true, true);
+    }
+    ply--; unmake();
+    if (stop) return 0;
+    if (v > best) {
+      best = v; bestM = m;
+      if (ply === 0) rootBest = m;
+      if (v > alpha) {
+        alpha = v;
+        if (v >= beta) {
+          if (quiet) {
+            if (killer1[ply] !== m) { killer2[ply] = killer1[ply]; killer1[ply] = m; }
+            const h = (m & 127) * 120 + ((m >> 7) & 127); hist[h] += depth * depth;
+            if (hist[h] > 400000) for (let j = 0; j < hist.length; j++) hist[j] >>= 1;
+          }
+          break;
+        }
+      }
+    }
+  }
+  if (!legal) return inChk ? -MATE + ply : 0;
+  let st = best; if (st > MATE - 500) st += ply; else if (st < -MATE + 500) st -= ply;
+  ttKey[idx] = hashHi; ttMove[idx] = bestM; ttScore[idx] = st; ttDepth[idx] = depth;
+  ttFlag[idx] = best >= beta ? LOWER : best > origAlpha ? EXACT : UPPER;
+  return best;
+}
+
+function think(ms, maxDepth) {
+  const t0 = Date.now(); deadline = t0 + ms; stop = false; nodes = 0; ply = 0; moveBase[0] = 0;
+  killer1.fill(0); killer2.fill(0); for (let j = 0; j < hist.length; j++) hist[j] >>= 2;
+  let best = 0, score = 0, depth = 0;
+  for (let d = 1; d <= (maxDepth || 64); d++) {
+    rootBest = 0;
+    const v = search(d, -INF, INF, true, false);
+    if (rootBest) best = rootBest;
+    if (stop) break;
+    score = v; depth = d;
+    if (Math.abs(v) > MATE - 200) break;
+    if (Date.now() - t0 > ms * 0.45) break; // không kịp xong độ sâu tiếp theo
+  }
+  return { move: best, score, depth, nodes };
+}
+
+/* ---------- Chuyển đổi nước đi ---------- */
+const FL = "abcdefgh";
+function toUci(m) { const f = m & 127, t = (m >> 7) & 127, pr = (m >> 14) & 7;
+  const sq = s => FL[(s - 21) % 10] + (8 - ((s - 21) / 10 | 0));
+  return sq(f) + sq(t) + (pr ? " pnbrq"[pr] : ""); }
+function legalList() {
+  const out = [], end = gen(0, false);
+  const arr = Array.from(MV.subarray(0, end));
+  for (const m of arr) { make(m); if (!attacked(kingSq[side ^ 1], side)) out.push(m); unmake(); }
+  return out;
+}
+function parseUci(u) { return legalList().find(m => toUci(m) === u) || 0; }
+
+/* ---------- Sách khai cuộc ---------- */
+const BOOK = [
+  "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7 f1e1 b7b5 a4b3 d7d6",
+  "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d3 d7d6 e1g1 e8g8",
+  "e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 g8f6 d4c6 b7c6",
+  "e2e4 e7e5 g1f3 g8f6 f3e5 d7d6 e5f3 f6e4 d2d4 d6d5",
+  "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6",
+  "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 b1c3 e7e5",
+  "e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4 b8c6 b1c3 d8c7",
+  "e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 c1g5 f8e7 e4e5 f6d7",
+  "e2e4 c7c6 d2d4 d7d5 b1c3 d5e4 c3e4 c8f5 e4g3 f5g6",
+  "e2e4 d7d5 e4d5 d8d5 b1c3 d5a5 d2d4 g8f6",
+  "d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5 f8e7 e2e3 e8g8",
+  "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6 b1c3 d5c4 a2a4 c8f5",
+  "d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 e2e3 e8g8 f1d3 d7d5",
+  "d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 g1f3 e8g8",
+  "d2d4 g8f6 c2c4 e7e6 g1f3 b7b6 g2g3 c8b7 f1g2 f8e7",
+  "d2d4 d7d5 g1f3 g8f6 c1f4 e7e6 e2e3 c7c5 c2c3 b8c6",
+  "c2c4 e7e5 b1c3 g8f6 g1f3 b8c6 g2g3 d7d5",
+  "c2c4 g8f6 b1c3 e7e6 e2e4 d7d5 e4e5",
+  "g1f3 d7d5 g2g3 g8f6 f1g2 e7e6 e1g1 f8e7 d2d3 e8g8",
+  "g1f3 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 d2d4 e8g8"
+].map(l => l.split(" "));
+function bookMove(moves) {
+  const n = moves.length, cands = [];
+  for (const line of BOOK) if (line.length > n && moves.every((m, i) => line[i] === m)) cands.push(line[n]);
+  return cands.length ? cands[Math.floor(Math.random() * cands.length)] : null;
+}
+
+/* ---------- Giao tiếp với trang ---------- */
+self.onmessage = e => {
+  const { moves, time, state, id } = e.data;
+  setStart();
+  let replayed = true;
+  for (const u of moves) { const m = parseUci(u); if (!m) { replayed = false; break; } make(m); }
+  if (!replayed && state) setBoard(state.b, state.turn, state.castle, state.ep, state.half); // phòng hờ
+  ply = 0;
+  const bm = replayed ? bookMove(moves) : null;
+  if (bm && parseUci(bm)) { postMessage({ id, move: bm, book: true }); return; }
+  const r = think(time || 3000);
+  // chỉ trả về nước chắc chắn hợp lệ
+  const legal = legalList();
+  let mv = legal.find(m => m === r.move) || 0;
+  if (!mv && legal.length) { const r2 = think(300, 4); mv = legal.find(m => m === r2.move) || legal[0]; }
+  postMessage({ id, move: mv ? toUci(mv) : null, depth: r.depth, score: r.score, nodes: r.nodes });
+};
+</script>
 
 <script>
 /* ===================== LUẬT CỜ ===================== */
@@ -370,7 +790,7 @@ function newGame(opts) {
 function playerName(color) {
   if (G.mode === "2p") return color === "w" ? "Trắng" : "Đen";
   if (color === G.human) return "Bạn";
-  return "Máy (" + { easy: "Dễ", medium: "Vừa", hard: "Khó" }[G.level] + ")";
+  return "Máy (" + { easy: "Dễ", medium: "Vừa", hard: "Khó", veryhard: "Rất khó" }[G.level] + ")";
 }
 
 function applyMove(m) {
@@ -404,15 +824,41 @@ function afterChange() {
   if (G.mode === "ai" && G.s.turn !== G.human) aiTurn();
 }
 
+const uci = m => FILES[m.fc] + (8 - m.fr) + FILES[m.tc] + (8 - m.tr) + (m.promo || "");
+let worker = null;
+function getWorker() {
+  if (worker === null) {
+    try {
+      worker = new Worker(URL.createObjectURL(new Blob([$("engineSrc").textContent], { type: "text/javascript" })));
+      worker.onmessage = e => onWorkerMove(e.data);
+      worker.onerror = () => { worker = false; if (thinking) fallbackMove(); };
+    } catch (e) { worker = false; }
+  }
+  return worker;
+}
+function finishAi(m) {
+  thinking = false;
+  const lm = m && legal.find(x => x.fr === m.fr && x.fc === m.fc && x.tr === m.tr && x.tc === m.tc && (x.promo || "") === (m.promo || ""));
+  applyMove(lm || bestMove(G.s, "hard", G.keys)); // luôn là nước hợp lệ
+}
+function fallbackMove() { const token = aiToken; setTimeout(() => { if (token === aiToken) finishAi(bestMove(G.s, "hard", G.keys)); }, 50); }
+function onWorkerMove(d) {
+  if (d.id !== aiToken || !thinking) return;
+  finishAi(legal.find(x => uci(x) === d.move));
+}
 function aiTurn() {
   thinking = true; render();
   const token = ++aiToken;
+  if (G.level === "veryhard" && getWorker()) {
+    const s = G.s;
+    worker.postMessage({ id: token, time: 3000, moves: G.hist.map(h => uci(h.m)),
+      state: { b: s.b, turn: s.turn, castle: s.castle, ep: s.ep, half: s.half } });
+    return;
+  }
   setTimeout(() => {
-    const m = bestMove(G.s, G.level, G.keys);
+    const m = bestMove(G.s, G.level === "veryhard" ? "hard" : G.level, G.keys);
     if (token !== aiToken) return;
-    thinking = false;
-    const lm = legal.find(x => x.fr === m.fr && x.fc === m.fc && x.tr === m.tr && x.tc === m.tc && x.promo === m.promo);
-    applyMove(lm || m);
+    finishAi(m);
   }, 250);
 }
 
