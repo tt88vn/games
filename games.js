@@ -1,6 +1,15 @@
 // Danh sách game. Thêm game mới: tạo thư mục games/<id>/index.html rồi thêm 1 dòng vào đây.
 window.GAMES = [
   {
+    id: "co-vua",
+    name: "Cờ Vua",
+    icon: "♞",
+    color: "#b58863",
+    tags: ["Cờ", "Trí tuệ"],
+    desc: "Đấu với máy (Dễ, Vừa, Khó) hoặc 2 người cùng máy. Có gợi ý nước đi và đi lại.",
+    added: "2026-11-23"
+  },
+  {
     id: "tinh-nham",
     name: "Bé Tính Nhẩm",
     icon: "🧮",
